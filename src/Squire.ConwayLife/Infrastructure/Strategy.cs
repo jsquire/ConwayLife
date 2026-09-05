@@ -7,8 +7,8 @@ namespace Squire.ConwayLife;
 public enum Strategy
 {
     /// <summary>
-    ///   The default approach should be applied.
+    ///   An intuitive approach should be applied, staying close to the original inspiration for solving the challenge.
     /// </summary>
     ///
-    Default
+    Naive
 }

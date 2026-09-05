@@ -1,6 +1,5 @@
 using System.CommandLine;
 using Squire.ConwayLife.Infrastructure;
-using Squire.ConwayLife.Strategies;
 
 namespace Squire.ConwayLife;
 
@@ -10,6 +9,12 @@ namespace Squire.ConwayLife;
 ///
 public static class EntryPoint
 {
+    /// <summary>The maximum number of distinct live cells allowed in the initial population.</summary>
+    private const int MaximumInitialPopulation = 10_000;
+
+    /// <summary>The maximum number of generations allowed in a simulation.</summary>
+    private const int MaximumGenerations = 30;
+
     /// <summary>
     ///   Simulates Conway's Game of Life in 64-bit signed integer space.
     /// </summary>
@@ -21,7 +26,7 @@ public static class EntryPoint
     /// </example>
     ///
     /// <example>
-    ///   <c>Squire.ConwayLife --file glider.lif --generations 10 --strategy Default</c>
+    ///   <c>Squire.ConwayLife --file glider.lif --generations 10 --strategy Naive</c>
     /// </example>
     ///
     /// <example>
@@ -36,20 +41,32 @@ public static class EntryPoint
 
         var fileOption = new Option<string?>("--file")
         {
-            Description = "Path to a Life 1.06 file containing the initial population."
+            Description = $"Path to a Life 1.06 file containing at most { MaximumInitialPopulation } distinct live cells."
         };
 
         var generationsOption = new Option<int>("--generations")
         {
-            Description = "Number of generations to simulate.",
-            DefaultValueFactory = _ => 10
+            Description = $"Number of generations to simulate (0 through { MaximumGenerations }).",
+            DefaultValueFactory = _ => 10,
+            Validators =
+            {
+                result =>
+                {
+                    var generations = result.GetValueOrDefault<int>();
+
+                    if ((generations < 0) || (generations > MaximumGenerations))
+                    {
+                        result.AddError($"The number of generations must be between 0 and { MaximumGenerations }, inclusive.");
+                    }
+                }
+            }
         };
 
         var strategyOption = new Option<Strategy>("--strategy")
         {
             Description = "The strategy to use for simulating the generations.",
             Required = true,
-            DefaultValueFactory = _ => Strategy.Default
+            DefaultValueFactory = _ => Strategy.Naive
         };
 
         rootCommand.Options.Add(fileOption);
@@ -78,10 +95,15 @@ public static class EntryPoint
     /// <param name="generations">Number of generations to simulate.</param>
     /// <param name="strategy">The <see cref="Strategy" /> to use for simulating the generations.</param>
     ///
+    /// <exception cref="ArgumentOutOfRangeException">The number of generations is outside the supported range of 0 through 30.</exception>
+    ///
     internal static void Execute(string? file,
                                  int generations,
                                  Strategy strategy)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(generations);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(generations, MaximumGenerations);
+
         if (file is not null)
         {
             if (!Path.Exists(file))
@@ -91,28 +113,13 @@ public static class EntryPoint
         }
 
         var initialPopulation = file is not null
-            ? ParseFileContents(File.ReadAllLines(file))
+            ? ParseFileContents(File.ReadLines(file))
             : ReadFromConsole();
 
-        var result = CreateStrategy(strategy).Simulate(initialPopulation, generations);
+        var result = StrategyBase.CreateStrategy(strategy).Simulate(initialPopulation, generations);
 
         WriteToConsole(result);
     }
-
-    /// <summary>
-    ///   Creates a <see cref="StrategyBase" /> which applies the given <paramref name="strategy" />
-    ///   to simulate Conway's Game of Life.
-    /// </summary>
-    ///
-    /// <param name="strategy">The strategy to create an implementation for.</param>
-    ///
-    /// <returns>The <see cref="StrategyBase" /> for the requested <paramref name="strategy" />.</returns>
-    ///
-    internal static StrategyBase CreateStrategy(Strategy strategy) => strategy switch
-    {
-        Strategy.Default => new DefaultStrategy(),
-        _ => throw new ArgumentException($"Unknown strategy: `{ strategy }`.", nameof(strategy))
-    };
 
     /// <summary>
     ///   Reads coordinates from standard input until a blank line is encountered.
@@ -120,9 +127,12 @@ public static class EntryPoint
     ///
     /// <returns>The set of live cell coordinates.</returns>
     ///
+    /// <exception cref="FormatException">An input line is not a valid coordinate or comment, or the initial population exceeds 10,000 distinct cells.</exception>
+    ///
     internal static HashSet<Coordinate> ReadFromConsole()
     {
         Console.WriteLine("Enter live cell coordinates (x y), one per line.");
+        Console.WriteLine($"Enter at most { MaximumInitialPopulation } distinct live cells.");
         Console.WriteLine();
         Console.WriteLine("Example:");
         Console.WriteLine("  1 1");
@@ -134,6 +144,7 @@ public static class EntryPoint
         Console.WriteLine();
 
         var cells = new HashSet<Coordinate>();
+
         while (true)
         {
             var line = Console.ReadLine();
@@ -155,11 +166,11 @@ public static class EntryPoint
 
             if (TryParseCoordinate(lineSpan, out var coordinate))
             {
-                cells.Add(coordinate);
+                AddInitialCell(cells, coordinate);
             }
             else
             {
-                Console.Error.WriteLine($"Invalid coordinate: {line}");
+                throw new FormatException($"Invalid coordinate: {line}");
             }
         }
 
@@ -174,12 +185,17 @@ public static class EntryPoint
     ///
     /// <returns>The set of live cell coordinates.</returns>
     ///
+    /// <exception cref="FormatException">A nonblank input line is not a valid coordinate or comment, or the initial population exceeds 10,000 distinct cells.</exception>
+    ///
     internal static HashSet<Coordinate> ParseFileContents(IEnumerable<string> fileContents)
     {
         var cells = new HashSet<Coordinate>();
+        var lineNumber = 0;
 
         foreach (var line in fileContents)
         {
+            ++lineNumber;
+
             var lineSpan = line.AsSpan();
 
             // Blank lines and comments are allowed in Life 1.06 format and should be ignored.
@@ -193,7 +209,11 @@ public static class EntryPoint
 
             if (TryParseCoordinate(lineSpan, out var coordinate))
             {
-                cells.Add(coordinate);
+                AddInitialCell(cells, coordinate);
+            }
+            else
+            {
+                throw new FormatException($"Invalid coordinate on line { lineNumber }: { line }");
             }
         }
 
@@ -244,13 +264,31 @@ public static class EntryPoint
         // values.  Since TryParse ignores leading and trailing whitespace, there
         // is no need to trim the slices.
 
-        if ((long.TryParse(line[..separatorIndex], out var x))
-            && (long.TryParse(line[(separatorIndex + 1)..], out var y)))
+        if ((long.TryParse(line[ ..separatorIndex ], out var x))
+            && (long.TryParse(line[ (separatorIndex + 1).. ], out var y)))
         {
             coordinate = new Coordinate(x, y);
             return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    ///   Adds a distinct initial cell while enforcing the population limit shared by both input paths.
+    /// </summary>
+    ///
+    /// <param name="cells">The initial population being collected.</param>
+    /// <param name="coordinate">The cell to add.</param>
+    ///
+    /// <exception cref="FormatException">The initial population exceeds 10,000 distinct cells.</exception>
+    ///
+    private static void AddInitialCell(HashSet<Coordinate> cells,
+                                       Coordinate coordinate)
+    {
+        if ((cells.Add(coordinate)) && (cells.Count > MaximumInitialPopulation))
+        {
+            throw new FormatException($"The initial population cannot exceed { MaximumInitialPopulation } distinct live cells.");
+        }
     }
 }

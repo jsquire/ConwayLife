@@ -1,4 +1,5 @@
 using Squire.ConwayLife.Infrastructure;
+using Squire.ConwayLife.Strategies;
 
 namespace Squire.ConwayLife;
 
@@ -24,6 +25,23 @@ internal abstract class StrategyBase
     ///
     /// <returns>The set of live cells after the specified number of generations.</returns>
     ///
-    public abstract IReadOnlyCollection<Coordinate> Simulate(IReadOnlyCollection<Coordinate> cells,
-                                                             int generations);
+    public abstract HashSet<Coordinate> Simulate(HashSet<Coordinate> cells,
+                                                 int generations);
+
+    /// <summary>
+    ///   Creates a <see cref="StrategyBase" /> which applies the given <paramref name="strategy" />
+    ///   to simulate Conway's Game of Life.
+    /// </summary>
+    ///
+    /// <param name="strategy">The strategy to create an implementation for.</param>
+    ///
+    /// <returns>The <see cref="StrategyBase" /> for the requested <paramref name="strategy" />.</returns>
+    ///
+    /// <exception cref="ArgumentException">The requested strategy is not recognized.</exception>
+    ///
+    internal static StrategyBase CreateStrategy(Strategy strategy) => strategy switch
+    {
+        Strategy.Naive => new NaiveStrategy(),
+        _ => throw new ArgumentException($"Unknown strategy: `{ strategy }`.", nameof(strategy))
+    };
 }
